@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 from fastapi.testclient import TestClient
 from jose import jwt
@@ -40,6 +43,7 @@ class TestGetPreferences:
     def test_admin_cannot_read_user_in_different_tenant(self):
         resp = client.get(f"/api/v1/users/{DAVE_ID}/preferences", headers=auth_header(CAROL_ID, ACME_TENANT, role="admin"))
         assert resp.status_code == 403
+        assert "outside your tenant" in resp.json()["detail"]
 
     def test_get_response_includes_etag_header(self):
         resp = client.get(f"/api/v1/users/{ALICE_ID}/preferences", headers=auth_header(ALICE_ID, ACME_TENANT))
@@ -65,6 +69,7 @@ class TestPutPreferences:
             headers={**auth_header(BOB_ID, ACME_TENANT), "If-Match": etag},
         )
         assert put_resp.status_code == 200
+        assert int(put_resp.headers["etag"].strip('"')) == int(etag.strip('"')) + 1
 
     def test_put_with_stale_etag_returns_412(self):
         get_resp = client.get(f"/api/v1/users/{CAROL_ID}/preferences", headers=auth_header(CAROL_ID, ACME_TENANT))
@@ -80,6 +85,37 @@ class TestPutPreferences:
             headers={**auth_header(CAROL_ID, ACME_TENANT), "If-Match": etag},
         )
         assert stale_resp.status_code == 412
+        assert "changed since they were read" in stale_resp.json()["detail"]
+
+    def test_concurrent_updates_with_same_etag_only_one_succeeds(self):
+        get_resp = client.get(
+            f"/api/v1/users/{ALICE_ID}/preferences",
+            headers=auth_header(ALICE_ID, ACME_TENANT),
+        )
+        etag = get_resp.headers["etag"]
+        barrier = Barrier(2)
+
+        def update_preference(field, value):
+            barrier.wait()
+            with TestClient(app) as concurrent_client:
+                return concurrent_client.put(
+                    f"/api/v1/users/{ALICE_ID}/preferences",
+                    json={field: value},
+                    headers={
+                        **auth_header(ALICE_ID, ACME_TENANT),
+                        "If-Match": etag,
+                    },
+                ).status_code
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            statuses = list(
+                executor.map(
+                    lambda update: update_preference(*update),
+                    (("email_enabled", False), ("sms_enabled", True)),
+                )
+            )
+
+        assert sorted(statuses) == [200, 412]
 
     def test_cross_tenant_put_is_rejected(self):
         get_resp = client.get(f"/api/v1/users/{DAVE_ID}/preferences", headers=auth_header(DAVE_ID, GLOBEX_TENANT))

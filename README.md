@@ -24,3 +24,18 @@ A multi-tenant SaaS platform lets enterprise customers manage how their users re
 - Two edits to the same record, both made from the same starting point, should end with one applied and one refused — never both silently merged or lost.
 - A refused request should make clear whether it was refused because the caller was not allowed, or because the record had already changed since it was read.
 - The checks under `tests/` exercise these behaviours once the stack reports it is ready.
+
+## Preferences API behavior
+
+- A user can read and update only their own preferences. An `admin` can manage users in
+  their own tenant, but no role can access another tenant's preferences.
+- The access policy is kept in `app/policies/preferences.py` and enforced by the
+  `authorize_preferences_access` FastAPI dependency before either route handler runs.
+  Repository reads and writes are additionally scoped by tenant.
+- `GET /api/v1/users/{user_id}/preferences` returns the current version as a strong
+  `ETag` header. `PUT` requires that value in `If-Match`; successful updates increment
+  the version and return the new `ETag`.
+- A missing `If-Match` is rejected with `428`, an invalid ETag with `400`, an access
+  violation with `403`, a missing preference with `404`, and a stale ETag with `412`.
+  Each update's locked version check, conditional write, and outcome classification
+  happen in one atomic SQL statement.

@@ -1,5 +1,6 @@
 from fastapi import Header, HTTPException
 from jose import JWTError, jwt
+from pydantic import ValidationError
 from app.config import settings
 from app.models.auth import TokenClaims
 from typing import Optional
@@ -13,10 +14,6 @@ def decode_token(authorization: Optional[str] = Header(default=None)) -> TokenCl
 
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-        return TokenClaims(
-            user_id=payload["user_id"],
-            tenant_id=payload["tenant_id"],
-            role=payload["role"],
-        )
-    except (JWTError, KeyError):
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        return TokenClaims.model_validate(payload)
+    except (JWTError, ValidationError):
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from None
